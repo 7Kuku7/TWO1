@@ -11,7 +11,7 @@ class Config:
     OUTPUT_DIR = "results"
     
     # ================= 实验名称与描述 =================
-    EXP_NAME = "Exp_v1"  # 实验组名
+    EXP_NAME = "Exp_v2"  # 实验组名
     DESCRIPTION = "Standard modularized training with SSL and Decoupling"
 
     # ================= 训练超参数 =================
@@ -24,11 +24,11 @@ class Config:
     
     # ================= 损失函数权重 (Ablation Control) =================
     # 通过设置权重为 0.0 来实现消融实验 (Ablation)
-    LAMBDA_MSE = 1.0      # 主分数回归损失
-    LAMBDA_RANK = 0.1     # 排序损失
-    LAMBDA_MI = 0.1       # 解耦损失 (MI Loss) -> 设为0即为 w/o Decoupling
+    LAMBDA_MSE = 0.0      # 主分数回归损失
+    LAMBDA_RANK = 0.0     # 排序损失
+    LAMBDA_MI = 0.2       # 解耦损失 (MI Loss) -> 设为0即为 w/o Decoupling
     LAMBDA_SUB = 0.5      # 子任务分数损失 -> 设为0即为 w/o Multi-task
-    LAMBDA_SSL = 0.2      # 自监督一致性损失 -> 设为0即为 w/o SSL
+    LAMBDA_SSL = 1.0      # 自监督一致性损失 -> 设为0即为 w/o SSL
 
     # ================= 模型配置 =================
     NUM_FRAMES = 8        # 每个视频采样的帧数
