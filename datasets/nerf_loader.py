@@ -8,8 +8,7 @@ import torchvision.transforms as T
 import sys
 import os
 
-# 引用你原来的 split 工具 (如果路径报错，请根据实际情况调整 sys.path)
-# 假设 consts_simple_split 在项目根目录
+# 引用你原来的 split 工具
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
     from consts_simple_split import build_simple_split
@@ -19,14 +18,14 @@ except ImportError:
 class NerfDataset(Dataset):
     def __init__(self, root_dir, mos_file, mode='train', 
                  basic_transform=None, 
-                 ssl_transform=None,  # 关键：从外部传入 SSL 增强器
+                 ssl_transform=None,  
                  distortion_sampling=False, 
                  num_frames=8,
                  use_subscores=True):
         
         self.root_dir = Path(root_dir)
         self.basic_transform = basic_transform
-        self.ssl_transform = ssl_transform # 如果为 None，就不产生 SSL 数据
+        self.ssl_transform = ssl_transform 
         self.distortion_sampling = distortion_sampling
         self.num_frames = num_frames
         self.use_subscores = use_subscores
@@ -54,23 +53,43 @@ class NerfDataset(Dataset):
 
     def _load_frames_pil(self, folder_path):
         all_frames = sorted(list(folder_path.glob("frame_*.png")))
-        # ... (保留你原来的寻找帧的逻辑) ...
+        if not all_frames: all_frames = sorted(list(folder_path.glob("frame_*.jpg")))
+        if not all_frames: all_frames = sorted([f for f in folder_path.iterdir() if f.suffix.lower() in ['.png', '.jpg', '.jpeg']])
+        
         if not all_frames: 
-            raise ValueError(f"No frames in {folder_path}")
+            # 如果真的没找到帧，为了防止崩溃，可以打印警告并返回空，或者直接报错
+            # 这里为了稳健性，报错
+            raise ValueError(f"No frames found in {folder_path}")
             
         indices = torch.linspace(0, len(all_frames)-1, self.num_frames).long()
         return [Image.open(all_frames[i]).convert('RGB') for i in indices]
 
     def _grid_mini_patch_sampling(self, tensor_img):
-        # ... (保留你原来的 grid sampling 逻辑) ...
-        # 这里为了节省篇幅省略具体代码，把原文件里的复制过来即可
-        return tensor_img 
+        # 将之前的 grid sampling 逻辑复制过来
+        # 假设输入是 [T, C, H, W]
+        T, C, H, W = tensor_img.shape
+        grid_h, grid_w = 4, 4
+        patch_h, patch_w = H // grid_h, W // grid_w
+        
+        patches = tensor_img.view(T, C, grid_h, patch_h, grid_w, patch_w)
+        patches = patches.permute(0, 2, 3, 1, 4, 5).contiguous()
+        patches = patches.view(T, grid_h * grid_w, C, patch_h, patch_w)
+        
+        shuffled_patches = []
+        for t in range(T):
+            indices = torch.randperm(grid_h * grid_w)
+            p = patches[t][indices]
+            shuffled_patches.append(p)
+            
+        shuffled_patches = torch.stack(shuffled_patches)
+        shuffled_patches = shuffled_patches.view(T, grid_h, grid_w, C, patch_h, patch_w)
+        shuffled_patches = shuffled_patches.permute(0, 3, 1, 4, 2, 5).contiguous()
+        return shuffled_patches.view(T, C, H, W)
 
     def __getitem__(self, idx):
         folder_path = self.valid_samples[idx]
         key = self._get_key_from_path(folder_path)
         
-        # 1. 获取标签
         entry = self.mos_labels[key]
         if isinstance(entry, dict):
             score = entry['mos'] / 100.0
@@ -88,26 +107,24 @@ class NerfDataset(Dataset):
                 sub_data.get("lighting", 0), sub_data.get("artifacts", 0)
             ], dtype=torch.float32) / 5.0
             
-        # 2. 加载图片
         frames_pil = self._load_frames_pil(folder_path)
         
-        # 3. 基础处理 (Main Branch)
-        # Apply transform to list of PIL
+        # Main Branch
         t_imgs = [self.basic_transform(img) for img in frames_pil]
-        content_input = torch.stack(t_imgs) # [T, C, H, W]
+        content_input = torch.stack(t_imgs)
         
         if self.distortion_sampling:
             distortion_input = self._grid_mini_patch_sampling(content_input)
         else:
             distortion_input = content_input.clone()
             
-        # 4. SSL 处理 (Auxiliary Branch) - 只有传入了 ssl_transform 才会跑
-        content_input_aug = torch.tensor(0.0) # Placeholder
+        # SSL Branch
+        content_input_aug = torch.tensor(0.0) 
         distortion_input_aug = torch.tensor(0.0)
         
         if self.ssl_transform is not None:
-            frames_aug_pil = self.ssl_transform(frames_pil) # 先做增强
-            t_imgs_aug = [self.basic_transform(img) for img in frames_aug_pil] # 再转 Tensor
+            frames_aug_pil = self.ssl_transform(frames_pil)
+            t_imgs_aug = [self.basic_transform(img) for img in frames_aug_pil]
             content_input_aug = torch.stack(t_imgs_aug)
             
             if self.distortion_sampling:
@@ -115,5 +132,10 @@ class NerfDataset(Dataset):
             else:
                 distortion_input_aug = content_input_aug.clone()
                 
-        # 返回所有需要的东西
         return content_input, distortion_input, score_tensor, sub_scores_tensor, key, content_input_aug, distortion_input_aug
+
+    # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+    # [修复点] 必须加上这个方法！
+    # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+    def __len__(self):
+        return len(self.valid_samples)
