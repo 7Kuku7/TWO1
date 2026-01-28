@@ -5,14 +5,25 @@ import numpy as np
 import random
 import json
 import os
+import torchvision.transforms as T
 
-# 导入我们拆分的模块
+# ================= 导入我们拆分好的新模块 =================
 from config import Config
 from core.solver import Solver
-from datasets.of_nerf import AdvancedOFNeRFDataset # 假设你保留了这个类名
+# [修改1] 导入新的 Dataset 类，而不是旧的 of_nerf
+from datasets.nerf_loader import NerfDataset  
+# [修改2] 导入独立的 SSL 增强模块
+from datasets.ssl_transforms import SelfSupervisedAugmentor 
 from models.dis_nerf_advanced import DisNeRFQA_Advanced
-import torchvision.transforms as T
-from datasets.of_nerf import MultiScaleCrop # 确保这个 transform 被正确导入
+
+# 确保 transform 工具类存在，如果没有单独拆分，可以直接写在这里或从 utils 导入
+class MultiScaleCrop:
+    def __init__(self, size=224): self.size = size
+    def __call__(self, img):
+        scale = int(np.random.choice([224, 256, 288]))
+        img = T.Resize(scale)(img)
+        img = T.RandomCrop(self.size)(img)
+        return img
 
 def set_seed(seed):
     if seed is None: return
@@ -28,38 +39,53 @@ def main():
     # 1. 初始化配置与环境
     cfg = Config()
     set_seed(cfg.SEED)
+    print("="*50)
     print(f"Start Experiment: {cfg.EXP_NAME}")
     print(f"Description: {cfg.DESCRIPTION}")
+    print(f"Output Dir: {cfg.get_output_path()}")
+    print("="*50)
 
-    # 2. 准备数据 Transforms
-    # 可以根据 Config 里的开关决定是否用 Multiscale
-    transform = T.Compose([
+    # 2. 准备数据 Transforms (基础变换)
+    basic_transform = T.Compose([
         MultiScaleCrop(224), 
         T.ToTensor(), 
         T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
+    
+    # [修改3] 实例化 SSL 增强器 (仅当权重 > 0 时)
+    # 这样如果做消融实验 (Lambda=0)，ssl_augmentor 就是 None，
+    # Dataset 内部就不会跑增强代码，速度更快且逻辑更纯粹。
+    ssl_augmentor = None
+    if cfg.LAMBDA_SSL > 0:
+        print(" -> SSL Augmentation Module: ENABLED")
+        ssl_augmentor = SelfSupervisedAugmentor()
+    else:
+        print(" -> SSL Augmentation Module: DISABLED (Ablation)")
 
     # 3. 实例化数据集
-    # 注意：这里直接用 Config 里的参数，不再需要 argparse 传参
-    train_set = AdvancedOFNeRFDataset(
+    # 训练集：传入 ssl_augmentor
+    train_set = NerfDataset(
         root_dir=cfg.ROOT_DIR,
         mos_file=cfg.MOS_FILE,
         mode='train',
-        transform=transform,
+        basic_transform=basic_transform,
+        ssl_transform=ssl_augmentor,   # [关键] 传入增强器实例或 None
         distortion_sampling=True,
-        use_subscores=cfg.USE_SUBSCORES,
-        enable_ssl=(cfg.LAMBDA_SSL > 0) # 如果权重>0，则开启SSL数据增强
+        use_subscores=cfg.USE_SUBSCORES
     )
     
-    val_set = AdvancedOFNeRFDataset(
+    # 验证集：ssl_transform 永远为 None
+    val_set = NerfDataset(
         root_dir=cfg.ROOT_DIR,
         mos_file=cfg.MOS_FILE,
         mode='val',
-        transform=transform,
-        distortion_sampling=False, # 验证集不做 grid sampling 增强
-        use_subscores=cfg.USE_SUBSCORES,
-        enable_ssl=False
+        basic_transform=basic_transform,
+        ssl_transform=None,
+        distortion_sampling=False,
+        use_subscores=cfg.USE_SUBSCORES
     )
+
+    print(f"Dataset Loaded. Train: {len(train_set)}, Val: {len(val_set)}")
 
     train_loader = DataLoader(train_set, batch_size=cfg.BATCH_SIZE, shuffle=True, num_workers=cfg.NUM_WORKERS)
     val_loader = DataLoader(val_set, batch_size=cfg.BATCH_SIZE, shuffle=False, num_workers=cfg.NUM_WORKERS)
@@ -78,13 +104,15 @@ def main():
     
     for epoch in range(1, cfg.EPOCHS + 1):
         loss = solver.train_epoch(epoch)
+        # 验证
         metrics, preds, targets, keys = solver.evaluate()
         
-        print(f"Epoch {epoch} | Loss: {loss:.4f} | Val SRCC: {metrics['srcc']:.4f} | PLCC: {metrics['plcc']:.4f}")
+        print(f"Epoch {epoch} | Loss: {loss:.4f} | Val SRCC: {metrics['srcc']:.4f} | PLCC: {metrics['plcc']:.4f} | KRCC: {metrics['krcc']:.4f}")
         
         # 保存最佳结果
         if metrics['srcc'] > best_srcc:
             best_srcc = metrics['srcc']
+            print(f"  >>> New Best SRCC: {best_srcc:.4f} (Saving Checkpoint)")
             solver.save_checkpoint(epoch, metrics, is_best=True)
             
             # 保存详细 JSON
@@ -92,14 +120,17 @@ def main():
                 res_path = os.path.join(cfg.get_output_path(), "best_results.json")
                 with open(res_path, 'w') as f:
                     json.dump({
-                        "epoch": epoch,
+                        "run_info": {"epoch": epoch, "seed": cfg.SEED},
                         "metrics": metrics,
                         "preds": preds.tolist(),
                         "targets": targets.tolist(),
                         "keys": keys
                     }, f, indent=4)
 
-    print(f"Done. Best SRCC: {best_srcc:.4f}. Results saved to {cfg.get_output_path()}")
+    print("="*50)
+    print(f"Experiment Finished. Best SRCC: {best_srcc:.4f}")
+    print(f"Results saved to: {cfg.get_output_path()}")
+    print("="*50)
 
 if __name__ == "__main__":
     main()
