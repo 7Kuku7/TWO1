@@ -10,13 +10,10 @@ import torchvision.transforms as T
 # ================= 导入我们拆分好的新模块 =================
 from config import Config
 from core.solver import Solver
-# [修改1] 导入新的 Dataset 类，而不是旧的 of_nerf
-from datasets.nerf_loader import NerfDataset  
-# [修改2] 导入独立的 SSL 增强模块
+from datasets.nerf_loader import NerfDataset
 from datasets.ssl_transforms import SelfSupervisedAugmentor 
 from models.dis_nerf_advanced import DisNeRFQA_Advanced
 
-# 确保 transform 工具类存在，如果没有单独拆分，可以直接写在这里或从 utils 导入
 class MultiScaleCrop:
     def __init__(self, size=224): self.size = size
     def __call__(self, img):
@@ -30,6 +27,7 @@ def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed) # 修正: torch.cuda.manual_seed 是单卡，all 是多卡
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
@@ -52,9 +50,7 @@ def main():
         T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
     
-    # [修改3] 实例化 SSL 增强器 (仅当权重 > 0 时)
-    # 这样如果做消融实验 (Lambda=0)，ssl_augmentor 就是 None，
-    # Dataset 内部就不会跑增强代码，速度更快且逻辑更纯粹。
+    # 实例化 SSL 增强器 (仅当权重 > 0 时)
     ssl_augmentor = None
     if cfg.LAMBDA_SSL > 0:
         print(" -> SSL Augmentation Module: ENABLED")
@@ -63,18 +59,16 @@ def main():
         print(" -> SSL Augmentation Module: DISABLED (Ablation)")
 
     # 3. 实例化数据集
-    # 训练集：传入 ssl_augmentor
     train_set = NerfDataset(
         root_dir=cfg.ROOT_DIR,
         mos_file=cfg.MOS_FILE,
         mode='train',
         basic_transform=basic_transform,
-        ssl_transform=ssl_augmentor,   # [关键] 传入增强器实例或 None
+        ssl_transform=ssl_augmentor,
         distortion_sampling=True,
         use_subscores=cfg.USE_SUBSCORES
     )
     
-    # 验证集：ssl_transform 永远为 None
     val_set = NerfDataset(
         root_dir=cfg.ROOT_DIR,
         mos_file=cfg.MOS_FILE,
@@ -118,11 +112,15 @@ def main():
             # 保存详细 JSON
             if cfg.SAVE_PER_VIDEO_RESULT:
                 res_path = os.path.join(cfg.get_output_path(), "best_results.json")
+                
+                # [关键修复] 将 numpy 类型转换为 python原生 float，否则 json.dump 会报错
+                safe_metrics = {k: float(v) for k, v in metrics.items()}
+                
                 with open(res_path, 'w') as f:
                     json.dump({
                         "run_info": {"epoch": epoch, "seed": cfg.SEED},
-                        "metrics": metrics,
-                        "preds": preds.tolist(),
+                        "metrics": safe_metrics, # 使用处理过的 metrics
+                        "preds": preds.tolist(), # numpy array 转 list
                         "targets": targets.tolist(),
                         "keys": keys
                     }, f, indent=4)
