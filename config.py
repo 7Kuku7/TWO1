@@ -4,14 +4,14 @@ import os
 class Config:
     # ================= 路径设置 =================
     # 数据集根目录
-    ROOT_DIR = "/media/abc/One Touch/NVS-SQA/TWO/renders"
+    ROOT_DIR = "/home/abc/wq/TWO1/renders"
     # MOS 标签文件
-    MOS_FILE = "mos_advanced.json"
+    MOS_FILE = "/home/abc/wq/TWO1/mos_advanced.json"
     # 结果保存主目录
-    OUTPUT_DIR = "experiments_results"
+    OUTPUT_DIR = "results"
     
     # ================= 实验名称与描述 =================
-    EXP_NAME = "Exp_v2_Standard_Split"  # 实验组名
+    EXP_NAME = "Exp_v1"  # 实验组名
     DESCRIPTION = "Standard modularized training with SSL and Decoupling"
 
     # ================= 训练超参数 =================
@@ -37,7 +37,7 @@ class Config:
     
     # ================= 功能开关 =================
     ENABLE_WANDB = False        # 是否使用 WandB 记录
-    WANDB_PROJECT = "Dis-NeRF-QA"
+    WANDB_PROJECT = "OF-NeRF-QA"
     SAVE_PER_VIDEO_RESULT = True # 是否保存每个视频的预测结果JSON
 
     @classmethod
