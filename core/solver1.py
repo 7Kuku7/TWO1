@@ -1,4 +1,4 @@
-# core/solver.py
+# 有监督有mos 
 import torch
 import torch.nn as nn
 import torch.optim as optim
