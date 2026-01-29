@@ -114,7 +114,7 @@ def main():
             
             # 保存详细 JSON
             if cfg.SAVE_PER_VIDEO_RESULT:
-                res_path = os.path.join(output_dir, f"best_results_ep{epoch}.json")
+                res_path = os.path.join(output_dir, "best_results.json")
                 safe_metrics = {k: float(v) for k, v in metrics.items()}
                 with open(res_path, 'w') as f:
                     json.dump({
