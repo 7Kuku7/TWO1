@@ -7,11 +7,38 @@ import json
 import os
 import argparse
 import torchvision.transforms as T
+
+# ================= 导入模块 =================
 from config import Config
 from core.solver import Solver
 from datasets.nerf_loader import NerfDataset
 from datasets.ssl_transforms import SelfSupervisedAugmentor 
 from models.dis_nerf_advanced import DisNeRFQA_Advanced
+
+# [新增] 参数解析函数
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run Ablation Study")
+    
+    # 实验名称
+    parser.add_argument("--exp_name", type=str, default="Default", help="Experiment name override")
+    
+    # 损失权重覆盖 (传入 -1 表示使用 config.py 默认值)
+    parser.add_argument("--lambda_ssl", type=float, default=-1.0)
+    parser.add_argument("--lambda_mi", type=float, default=-1.0)
+    parser.add_argument("--lambda_sub", type=float, default=-1.0)
+    parser.add_argument("--lambda_rank", type=float, default=-1.0)
+    
+    # 结构开关 (Structural Ablation Flags)
+    # 加上这些 flag 代表 DISABLE 该模块
+    parser.add_argument("--no_fusion", action='store_true', help="Disable Adaptive Fusion (Use Concat)")
+    parser.add_argument("--no_multitask", action='store_true', help="Remove Sub-score Head")
+    parser.add_argument("--no_decoupling", action='store_true', help="Remove MI Estimator")
+    
+    # 训练设置
+    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--gpu", type=str, default="0")
+    
+    return parser.parse_args()
 
 class MultiScaleCrop:
     def __init__(self, size=224): self.size = size
@@ -21,27 +48,19 @@ class MultiScaleCrop:
         img = T.RandomCrop(self.size)(img)
         return img
 
-def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--exp_name", type=str, default="Default")
-    parser.add_argument("--gpu", type=str, default="0")
-    parser.add_argument("--epochs", type=int, default=50)
-    
-    # Loss 权重 (Parameter Ablation)
-    parser.add_argument("--lambda_ssl", type=float, default=-1)
-    parser.add_argument("--lambda_mi", type=float, default=-1)
-    parser.add_argument("--lambda_sub", type=float, default=-1)
-    parser.add_argument("--lambda_rank", type=float, default=-1)
-    
-    # 结构开关 (Structural Ablation)
-    # 加上这些 flag 代表 DISABLE 该模块
-    parser.add_argument("--no_fusion", action='store_true', help="Disable Adaptive Fusion (Use Concat)")
-    parser.add_argument("--no_multitask", action='store_true', help="Remove Sub-score Head")
-    parser.add_argument("--no_decoupling", action='store_true', help="Remove MI Estimator")
-    
-    return parser.parse_args()
+def set_seed(seed):
+    if seed is None: return
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    print(f"Set Global Seed: {seed}")
 
 def main():
+    # 1. 初始化 Config
     cfg = Config()
     args = parse_args()
     
@@ -56,36 +75,71 @@ def main():
     if args.lambda_sub >= 0: cfg.LAMBDA_SUB = args.lambda_sub
     if args.lambda_rank >= 0: cfg.LAMBDA_RANK = args.lambda_rank
     
-    # 结构覆盖
+    # 结构覆盖 (注意：args.no_XXX 为 True 时表示禁用，所以 use_XXX 要取反)
     use_fusion = not args.no_fusion
     use_multitask = not args.no_multitask
     use_decoupling = not args.no_decoupling
 
-    # 如果结构被移除了，对应的 Loss 权重强制归零（防止 Solver 打印困惑的信息）
+    # 如果结构被移除了，对应的 Loss 权重强制归零
     if not use_multitask: cfg.LAMBDA_SUB = 0.0
     if not use_decoupling: cfg.LAMBDA_MI = 0.0
+    
+    set_seed(cfg.SEED)
     
     # 路径处理
     output_dir = os.path.join(cfg.OUTPUT_DIR, cfg.EXP_NAME)
     os.makedirs(output_dir, exist_ok=True)
+
+    print("="*60)
+    print(f"Start Experiment: {cfg.EXP_NAME}")
+    print(f"  > Structure: Fusion={use_fusion}, MultiTask={use_multitask}, Decouple={use_decoupling}")
+    print(f"  > Output: {output_dir}")
+    print("="*60)
     
-    # Transforms
+    # 保存配置
+    with open(os.path.join(output_dir, "config_snapshot.json"), "w") as f:
+        cfg_dict = {k: v for k, v in Config.__dict__.items() if k.isupper()}
+        json.dump(cfg_dict, f, indent=4)
+
+    # 2. Transforms
     basic_transform = T.Compose([
-        MultiScaleCrop(224), T.ToTensor(), T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        MultiScaleCrop(224), 
+        T.ToTensor(), 
+        T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
     
-    # SSL 模块 (仅当 LAMBDA_SSL > 0 时才加载)
     ssl_augmentor = SelfSupervisedAugmentor() if cfg.LAMBDA_SSL > 0 else None
 
-    # Dataset
-    train_set = NerfDataset(cfg.ROOT_DIR, cfg.MOS_FILE, 'train', basic_transform, ssl_augmentor, True, cfg.USE_SUBSCORES)
-    val_set = NerfDataset(cfg.ROOT_DIR, cfg.MOS_FILE, 'val', basic_transform, None, False, cfg.USE_SUBSCORES)
+    # 3. Dataset [核心修复点：使用关键字参数]
+    print("Loading Datasets...")
+    train_set = NerfDataset(
+        root_dir=cfg.ROOT_DIR,
+        mos_file=cfg.MOS_FILE,
+        mode='train',
+        basic_transform=basic_transform,
+        ssl_transform=ssl_augmentor,
+        distortion_sampling=True,
+        num_frames=8,                   # <--- 显式指定 num_frames
+        use_subscores=cfg.USE_SUBSCORES # <--- 显式指定 use_subscores
+    )
     
-    train_loader = DataLoader(train_set, cfg.BATCH_SIZE, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_set, cfg.BATCH_SIZE, shuffle=False, num_workers=4)
+    val_set = NerfDataset(
+        root_dir=cfg.ROOT_DIR,
+        mos_file=cfg.MOS_FILE,
+        mode='val',
+        basic_transform=basic_transform,
+        ssl_transform=None,
+        distortion_sampling=False,
+        num_frames=8,                   # <--- 显式指定 num_frames
+        use_subscores=cfg.USE_SUBSCORES # <--- 显式指定 use_subscores
+    )
 
-    # Model (传入结构开关)
-    print(f"Build Model | Fusion: {use_fusion} | MultiTask: {use_multitask} | Decouple: {use_decoupling}")
+    print(f"Dataset Loaded. Train: {len(train_set)}, Val: {len(val_set)}")
+
+    train_loader = DataLoader(train_set, batch_size=cfg.BATCH_SIZE, shuffle=True, num_workers=4)
+    val_loader = DataLoader(val_set, batch_size=cfg.BATCH_SIZE, shuffle=False, num_workers=4)
+
+    # 4. Model (传入结构开关)
     model = DisNeRFQA_Advanced(
         num_subscores=4, 
         use_fusion=use_fusion, 
@@ -93,19 +147,29 @@ def main():
         use_decoupling=use_decoupling
     )
 
+    # 5. Solver
     solver = Solver(model, cfg, train_loader, val_loader)
+
+    # 6. Train Loop
+    best_srcc = -1.0
     
-    best_srcc = -1
     for epoch in range(1, cfg.EPOCHS + 1):
         loss = solver.train_epoch(epoch)
-        metrics, _, _, _ = solver.evaluate()
+        metrics, preds, targets, keys = solver.evaluate()
+        
         print(f"Ep {epoch} | Loss: {loss:.4f} | Val SRCC: {metrics['srcc']:.4f}")
         
         if metrics['srcc'] > best_srcc:
             best_srcc = metrics['srcc']
             solver.save_model(output_dir, epoch, metrics)
+            
             with open(os.path.join(output_dir, "best_results.json"), "w") as f:
-                json.dump(metrics, f)
+                json.dump({
+                    "metrics": {k: float(v) for k, v in metrics.items()},
+                    "preds": preds.tolist(),
+                    "targets": targets.tolist(),
+                    "keys": keys
+                }, f)
 
 if __name__ == "__main__":
     main()
