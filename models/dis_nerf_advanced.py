@@ -75,11 +75,19 @@ class DisNeRFQA_Advanced(nn.Module):
         # Auxiliary Sub-score Regressor (Multi-task Innovation)
         # Predicts: [Discomfort, Blur, Lighting, Artifacts] (normalized 0-1)
         self.num_subscores = num_subscores
+        # self.subscore_head = nn.Sequential(
+        #     nn.Linear(self.feat_dim, 256), # Uses distortion features
+        #     nn.ReLU(),
+        #     nn.Linear(256, num_subscores),
+        #     nn.Sigmoid() # Assuming subscores are also normalized to 0-1
+        # )
+        
         self.subscore_head = nn.Sequential(
-            nn.Linear(self.feat_dim, 256), # Uses distortion features
+            # 输入改为 Fusion 后的维度 (768 * 2)
+            nn.Linear(self.feat_dim * 2, 256), 
             nn.ReLU(),
             nn.Linear(256, num_subscores),
-            nn.Sigmoid() # Assuming subscores are also normalized to 0-1
+            nn.Sigmoid()
         )
         
         # Contrastive Projectors
@@ -133,7 +141,8 @@ class DisNeRFQA_Advanced(nn.Module):
         score = self.regressor(feat_fused)
         
         # 2. Sub-scores (Auxiliary)
-        sub_scores = self.subscore_head(feat_d)
+        # sub_scores = self.subscore_head(feat_d)
+        sub_scores = self.subscore_head(feat_fused)
         
         # 3. Projections
         proj_c = self.proj_c(feat_c)
@@ -159,4 +168,5 @@ class MultiTaskLoss(nn.Module):
             # log_vars[i] = log(sigma^2)
             precision = torch.exp(-self.log_vars[i])
             loss_sum += 0.5 * precision * loss + 0.5 * self.log_vars[i]
+
         return loss_sum
