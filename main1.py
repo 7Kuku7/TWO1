@@ -1,4 +1,9 @@
 # run_ablation.py
+# python run_ablation.py --exp_name Proposed_Full --lambda_mi 0.0
+# python run_ablation.py --exp_name Ablation_wo_MultiTask --no_multitask --lambda_mi 0.0
+# python run_ablation.py --exp_name Ablation_wo_SSL --lambda_ssl 0.0 --lambda_mi 0.0
+
+
 import torch
 from torch.utils.data import DataLoader
 import numpy as np
