@@ -86,6 +86,35 @@ class NerfDataset(Dataset):
         shuffled_patches = shuffled_patches.permute(0, 3, 1, 4, 2, 5).contiguous()
         return shuffled_patches.view(T, C, H, W)
 
+    # [修改 1] 将原来的 _grid_mini_patch_sampling 替换为基于滤波的特征提取
+    def _get_distortion_input(self, tensor_img):
+        """
+        不再打乱 Patch，而是使用拉普拉斯算子提取高频残差图。
+        这能保留几何结构，同时突出 NeRF 的边缘伪影和噪声。
+        Input: [T, C, H, W]
+        """
+        # 定义拉普拉斯卷积核 (提取边缘和高频噪声)
+        # 形状: [C, 1, 3, 3] -> 针对每个通道独立卷积
+        kernel = torch.tensor([[-1, -1, -1], 
+                               [-1,  8, -1], 
+                               [-1, -1, -1]], dtype=torch.float32)
+        
+        # 扩展到 3 个通道 (RGB)
+        kernel = kernel.view(1, 1, 3, 3).repeat(3, 1, 1, 1)
+        
+        # 放到与输入相同的设备上 (CPU)
+        weights = kernel
+        
+        T, C, H, W = tensor_img.shape
+        
+        # 为了进行卷积，先 reshape 成 [T, C, H, W] -> 也就是 batch size = T
+        # 注意：这里我们在 CPU 上做，数据量不大，速度通常可以接受
+        with torch.no_grad():
+            # 使用 groups=3 保证 RGB 通道独立处理，padding=1 保持尺寸不变
+            out = torch.nn.functional.conv2d(tensor_img, weights, groups=3, padding=1)
+        
+        return out
+
     def __getitem__(self, idx):
         folder_path = self.valid_samples[idx]
         key = self._get_key_from_path(folder_path)
