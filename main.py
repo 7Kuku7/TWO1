@@ -97,19 +97,38 @@ def main():
     solver = Solver(model, cfg, train_loader, val_loader)
 
     # 6. Train Loop
-    best_srcc = -1.0
+    # best_srcc = -1.0
+    
+    # for epoch in range(1, cfg.EPOCHS + 1):
+    #     loss = solver.train_epoch(epoch)
+    #     metrics, preds, targets, keys = solver.evaluate()
+        
+    #     print(f"Epoch {epoch} | Loss: {loss:.4f} | Val SRCC: {metrics['srcc']:.4f} | PLCC: {metrics['plcc']:.4f}")
+        
+    #     if metrics['srcc'] > best_srcc:
+    #         best_srcc = metrics['srcc']
+    #         print(f"  >>> New Best SRCC: {best_srcc:.4f} (Saving...)")
+            
+    #         # 保存最佳模型到带时间戳的目录
+    #         solver.save_model(output_dir, epoch, metrics)
+    # 6. Train Loop
+    best_score = -1.0  # [修改] 改为记录综合分数
     
     for epoch in range(1, cfg.EPOCHS + 1):
         loss = solver.train_epoch(epoch)
         metrics, preds, targets, keys = solver.evaluate()
         
-        print(f"Epoch {epoch} | Loss: {loss:.4f} | Val SRCC: {metrics['srcc']:.4f} | PLCC: {metrics['plcc']:.4f}")
+        # [修改] 计算综合得分：SRCC + PLCC
+        current_score = metrics['srcc'] + metrics['plcc']
         
-        if metrics['srcc'] > best_srcc:
-            best_srcc = metrics['srcc']
-            print(f"  >>> New Best SRCC: {best_srcc:.4f} (Saving...)")
+        print(f"Epoch {epoch} | Loss: {loss:.4f} | Val SRCC: {metrics['srcc']:.4f} | PLCC: {metrics['plcc']:.4f} | Sum: {current_score:.4f}")
+        
+        # [修改] 判断综合分数是否提升
+        if current_score > best_score:
+            best_score = current_score
+            print(f"  >>> New Best Score (SRCC+PLCC): {best_score:.4f} (Saving...)")
             
-            # 保存最佳模型到带时间戳的目录
+            # 保存模型
             solver.save_model(output_dir, epoch, metrics)
             
             # 保存详细 JSON
