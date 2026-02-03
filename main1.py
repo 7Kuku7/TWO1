@@ -1,4 +1,4 @@
-#消融实验 接受结构化参数
+# run_ablation.py
 import torch
 from torch.utils.data import DataLoader
 import numpy as np
@@ -15,7 +15,6 @@ from datasets.nerf_loader import NerfDataset
 from datasets.ssl_transforms import SelfSupervisedAugmentor 
 from models.dis_nerf_advanced import DisNeRFQA_Advanced
 
-# [新增] 参数解析函数
 def parse_args():
     parser = argparse.ArgumentParser(description="Run Ablation Study")
     
@@ -28,9 +27,8 @@ def parse_args():
     parser.add_argument("--lambda_sub", type=float, default=-1.0)
     parser.add_argument("--lambda_rank", type=float, default=-1.0)
     
-    # 结构开关 (Structural Ablation Flags)
-    # 加上这些 flag 代表 DISABLE 该模块
-    parser.add_argument("--no_fusion", action='store_true', help="Disable Adaptive Fusion (Use Concat)")
+    # 结构开关 (加上这些 flag 代表 DISABLE 该模块)
+    parser.add_argument("--no_fusion", action='store_true', help="Disable Adaptive Fusion")
     parser.add_argument("--no_multitask", action='store_true', help="Remove Sub-score Head")
     parser.add_argument("--no_decoupling", action='store_true', help="Remove MI Estimator")
     
@@ -75,12 +73,12 @@ def main():
     if args.lambda_sub >= 0: cfg.LAMBDA_SUB = args.lambda_sub
     if args.lambda_rank >= 0: cfg.LAMBDA_RANK = args.lambda_rank
     
-    # 结构覆盖 (注意：args.no_XXX 为 True 时表示禁用，所以 use_XXX 要取反)
+    # 结构开关 (args.no_XXX 为 True 时表示禁用)
     use_fusion = not args.no_fusion
     use_multitask = not args.no_multitask
     use_decoupling = not args.no_decoupling
 
-    # 如果结构被移除了，对应的 Loss 权重强制归零
+    # 联动逻辑：如果结构被移除，Loss 必须归零
     if not use_multitask: cfg.LAMBDA_SUB = 0.0
     if not use_decoupling: cfg.LAMBDA_MI = 0.0
     
@@ -93,6 +91,7 @@ def main():
     print("="*60)
     print(f"Start Experiment: {cfg.EXP_NAME}")
     print(f"  > Structure: Fusion={use_fusion}, MultiTask={use_multitask}, Decouple={use_decoupling}")
+    print(f"  > Weights: MSE={cfg.LAMBDA_MSE}, Rank={cfg.LAMBDA_RANK}, SSL={cfg.LAMBDA_SSL}, MI={cfg.LAMBDA_MI}, Sub={cfg.LAMBDA_SUB}")
     print(f"  > Output: {output_dir}")
     print("="*60)
     
@@ -110,17 +109,16 @@ def main():
     
     ssl_augmentor = SelfSupervisedAugmentor() if cfg.LAMBDA_SSL > 0 else None
 
-    # 3. Dataset [核心修复点：使用关键字参数]
-    print("Loading Datasets...")
+    # 3. Dataset
     train_set = NerfDataset(
         root_dir=cfg.ROOT_DIR,
         mos_file=cfg.MOS_FILE,
         mode='train',
         basic_transform=basic_transform,
         ssl_transform=ssl_augmentor,
-        distortion_sampling=True,
-        num_frames=8,                   # <--- 显式指定 num_frames
-        use_subscores=cfg.USE_SUBSCORES # <--- 显式指定 use_subscores
+        distortion_sampling=True, # 这里实际上会调用 _get_distortion_input
+        num_frames=8,
+        use_subscores=cfg.USE_SUBSCORES
     )
     
     val_set = NerfDataset(
@@ -129,12 +127,10 @@ def main():
         mode='val',
         basic_transform=basic_transform,
         ssl_transform=None,
-        distortion_sampling=False,
-        num_frames=8,                   # <--- 显式指定 num_frames
-        use_subscores=cfg.USE_SUBSCORES # <--- 显式指定 use_subscores
+        distortion_sampling=False, # 验证集通常不做 distortion 分支的特殊增强，或者也可以保持一致
+        num_frames=8,
+        use_subscores=cfg.USE_SUBSCORES
     )
-
-    print(f"Dataset Loaded. Train: {len(train_set)}, Val: {len(val_set)}")
 
     train_loader = DataLoader(train_set, batch_size=cfg.BATCH_SIZE, shuffle=True, num_workers=4)
     val_loader = DataLoader(val_set, batch_size=cfg.BATCH_SIZE, shuffle=False, num_workers=4)
@@ -151,20 +147,27 @@ def main():
     solver = Solver(model, cfg, train_loader, val_loader)
 
     # 6. Train Loop
-    best_srcc = -1.0
+    best_score = -1.0 # 综合分数 (SRCC + PLCC)
     
     for epoch in range(1, cfg.EPOCHS + 1):
         loss = solver.train_epoch(epoch)
         metrics, preds, targets, keys = solver.evaluate()
         
-        print(f"Ep {epoch} | Loss: {loss:.4f} | Val SRCC: {metrics['srcc']:.4f}")
+        # [修正] 使用 SRCC + PLCC 作为保存标准
+        current_score = metrics['srcc'] + metrics['plcc']
         
-        if metrics['srcc'] > best_srcc:
-            best_srcc = metrics['srcc']
+        print(f"Ep {epoch} | Loss: {loss:.4f} | Val SRCC: {metrics['srcc']:.4f} | PLCC: {metrics['plcc']:.4f} | Sum: {current_score:.4f}")
+        
+        if current_score > best_score:
+            best_score = current_score
+            print(f"  >>> New Best Score: {best_score:.4f} (Saving...)")
+            
             solver.save_model(output_dir, epoch, metrics)
             
+            # 保存详细结果
             with open(os.path.join(output_dir, "best_results.json"), "w") as f:
                 json.dump({
+                    "run_info": {"epoch": epoch, "best_score": best_score},
                     "metrics": {k: float(v) for k, v in metrics.items()},
                     "preds": preds.tolist(),
                     "targets": targets.tolist(),
