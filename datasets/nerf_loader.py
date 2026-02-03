@@ -142,8 +142,13 @@ class NerfDataset(Dataset):
         t_imgs = [self.basic_transform(img) for img in frames_pil]
         content_input = torch.stack(t_imgs)
         
+        # if self.distortion_sampling:
+        #     distortion_input = self._grid_mini_patch_sampling(content_input)
+        # else:
+        #     distortion_input = content_input.clone()
+
         if self.distortion_sampling:
-            distortion_input = self._grid_mini_patch_sampling(content_input)
+            distortion_input = self._get_distortion_input(content_input)
         else:
             distortion_input = content_input.clone()
             
@@ -156,9 +161,14 @@ class NerfDataset(Dataset):
             t_imgs_aug = [self.basic_transform(img) for img in frames_aug_pil]
             content_input_aug = torch.stack(t_imgs_aug)
             
-            if self.distortion_sampling:
-                distortion_input_aug = self._grid_mini_patch_sampling(content_input_aug)
-            else:
+            # if self.distortion_sampling:
+            #     distortion_input_aug = self._grid_mini_patch_sampling(content_input_aug)
+            # else:
+            #     distortion_input_aug = content_input_aug.clone()
+
+             if self.distortion_sampling:
+                distortion_input_aug = self._get_distortion_input(content_input_aug) # 修改这里
+             else:
                 distortion_input_aug = content_input_aug.clone()
                 
         return content_input, distortion_input, score_tensor, sub_scores_tensor, key, content_input_aug, distortion_input_aug
